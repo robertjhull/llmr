@@ -91,9 +91,26 @@ def strip_code_fence(text: str) -> str:
     return match.group(1).strip() if match else stripped
 
 
-def estimate_tokens(messages: list[dict[str, Any]]) -> int:
-    """Character-count heuristic -- good enough for routing/preflight, not exact."""
-    text = " ".join(str(m.get("content") or "") for m in messages)
+def _prompt_text(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    response_format: dict[str, Any] | None,
+) -> str:
+    parts = [str(m.get("content") or "") for m in messages]
+    if tools:
+        parts.append(json.dumps(tools))
+    if response_format:
+        parts.append(json.dumps(response_format))
+    return " ".join(parts)
+
+
+async def determine_token_count(state: DeploymentState, text: str) -> int:
+    count = await asyncio.to_thread(state.count_tokens_via_endpoint, text)
+    if count is not None:
+        return count
+    count = await asyncio.to_thread(state.count_tokens_via_local_tokenizer, text)
+    if count is not None:
+        return count
     return max(1, len(text) // 4)
 
 
@@ -164,41 +181,38 @@ class Router:
         return state, call_id, activity
 
     def _pick_and_claim(
-        self, job: Job, prompt_tokens: int
+        self, job: Job, token_counts: dict[str, int]
     ) -> tuple[DeploymentState, str, CallActivity] | None:
-        """Must be called holding the pool's coordinator lock, so the decision
-        and the capacity claim happen atomically. Returns None to mean "keep
-        waiting", or raises when nothing could ever satisfy this job."""
         pool = job.pool
 
         if job.deployment_id is not None:
-            # Already pinned (round >= 2 / tool-call resume) -- conversation
-            # state lives on this one deployment now, never re-picked.
             state = self._get_state(pool, job.deployment_id)
-            if not state.fits_context(prompt_tokens):
+            prompt_tokens = token_counts.get(state.deployment.id)
+            if prompt_tokens is not None and not state.fits_context(prompt_tokens):
                 raise NoHealthyDeploymentError(
                     f"pinned deployment {job.deployment_id!r} has max_context_tokens < "
-                    f"{prompt_tokens} estimated prompt tokens"
+                    f"{prompt_tokens} actual prompt tokens"
                 )
             if not state.healthy or state.free_slots() == 0:
                 return None
             return self._claim(state, job)
 
         healthy = [s for s in self.pools[pool] if s.healthy]
-        candidates = [s for s in healthy if s.fits_context(prompt_tokens)]
+        candidates = [
+            s
+            for s in healthy
+            if (pt := token_counts.get(s.deployment.id)) is not None and s.fits_context(pt)
+        ]
         if not candidates:
             if healthy:
-                raise NoHealthyDeploymentError(
-                    f"no deployment in pool {pool!r} has max_context_tokens >= "
-                    f"{prompt_tokens} estimated prompt tokens"
-                )
+                raise NoHealthyDeploymentError(f"no deployment in pool {pool!r} fits this prompt's token count")
             raise NoHealthyDeploymentError(f"no healthy deployment in pool {pool!r}")
 
         best_idle, t_idle = None, None
         for s in candidates:
             if s.free_slots() == 0:
                 continue
-            t = s.estimate_duration(prompt_tokens)
+            t = s.estimate_duration(token_counts[s.deployment.id])
             if best_idle is None or t < t_idle:
                 best_idle, t_idle = s, t
 
@@ -212,7 +226,7 @@ class Router:
             remaining = s.soonest_remaining()
             if remaining is None:
                 continue  # no live progress signal -- can't vouch for it
-            t = remaining + s.estimate_duration(prompt_tokens)
+            t = remaining + s.estimate_duration(token_counts[s.deployment.id])
             if best_busy is None or t < t_busy:
                 best_busy, t_busy = s, t
 
@@ -222,14 +236,14 @@ class Router:
         return self._claim(best_idle, job)
 
     async def _acquire_slot(
-        self, job: Job, prompt_tokens: int
+        self, job: Job, token_counts: dict[str, int]
     ) -> tuple[DeploymentState, str, CallActivity]:
         coord = self._coord[job.pool]
         async with coord.condition:
             coord.waiting += 1
             try:
                 while True:
-                    claimed = self._pick_and_claim(job, prompt_tokens)
+                    claimed = self._pick_and_claim(job, token_counts)
                     if claimed is not None:
                         return claimed
                     await coord.condition.wait()
@@ -296,9 +310,17 @@ class Router:
         tools: list[dict[str, Any]] | None,
         tool_choice: Any,
     ) -> CompleteResult:
-        prompt_tokens = estimate_tokens(messages)
+        prompt_text = _prompt_text(messages, tools, response_format)
+        if job.deployment_id is not None:
+            pinned_state = self._get_state(job.pool, job.deployment_id)
+            token_counts = {pinned_state.deployment.id: await determine_token_count(pinned_state, prompt_text)}
+        else:
+            candidates = [s for s in self.pools[job.pool] if s.healthy]
+            counts = await asyncio.gather(*(determine_token_count(s, prompt_text) for s in candidates))
+            token_counts = {s.deployment.id: c for s, c in zip(candidates, counts)}
+
         start = time.monotonic()
-        state, call_id, activity = await self._acquire_slot(job, prompt_tokens)
+        state, call_id, activity = await self._acquire_slot(job, token_counts)
         retries = state.get_max_retries(job.max_retries)
         request_timeout = state.get_timeout()
 
@@ -326,7 +348,7 @@ class Router:
                     self._log_attempt(job.trace_id, state.deployment.id, attempt, None, exc)
                     continue
 
-                self._update_metrics(state, prompt_tokens, activity)
+                self._update_metrics(state, token_counts[state.deployment.id], activity)
                 try:
                     await asyncio.to_thread(self._persist_metrics)
                 except OSError:

@@ -11,10 +11,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel
+from tokenizers import Tokenizer
 
 DEFAULT_DURATION_SECONDS = 5.0
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_REQUEST_TIMEOUT = 120.0
+
+_TOKENIZER_CACHE: dict[str, Tokenizer | None] = {}
 
 
 class Deployment(BaseModel):
@@ -26,6 +29,7 @@ class Deployment(BaseModel):
     max_context_tokens: int | None = None
     max_retries: int | None = None
     request_timeout: float | None = None
+    tokenizer: str | None = None
 
 
 @dataclass
@@ -51,6 +55,7 @@ class DeploymentState:
         self.decode_tokens_per_second: float | None = None
         self.avg_completion_tokens: float | None = None
         self.active_calls: dict[str, CallActivity] = {}
+        self.has_tokenize_endpoint: bool | None = None
 
     def get_max_retries(self, override: int | None) -> int:
         if override is not None:
@@ -78,9 +83,6 @@ class DeploymentState:
         return not mct or prompt_tokens <= mct
 
     def soonest_remaining(self) -> float | None:
-        # Smallest known time-left among in-flight calls -- the earliest a slot
-        # could open. None if no in-flight call has enough live progress to
-        # estimate against (e.g. still in prefill).
         knowns = [r for a in self.active_calls.values() if (r := self._remaining(a)) is not None]
         return min(knowns) if knowns else None
 
@@ -108,6 +110,47 @@ class DeploymentState:
 
         self.healthy = await asyncio.to_thread(_ping)
         return self.healthy
+
+    def count_tokens_via_endpoint(self, text: str) -> int | None:
+        if self.has_tokenize_endpoint is False or not self.deployment.api_base:
+            return None
+
+        parts = urlsplit(self.deployment.api_base)
+        url = f"{parts.scheme}://{parts.netloc}/tokenize"
+        body = json.dumps({"content": text}).encode()
+        headers = {"Content-Type": "application/json"}
+        if self.deployment.api_key:
+            headers["Authorization"] = f"Bearer {self.deployment.api_key}"
+        req = urllib.request.Request(url, data=body, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                payload = json.loads(resp.read())
+            tokens = payload["tokens"]
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                self.has_tokenize_endpoint = False
+            return None
+        except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+            return None
+
+        self.has_tokenize_endpoint = True
+        return len(tokens)
+
+    def count_tokens_via_local_tokenizer(self, text: str) -> int | None:
+        name = self.deployment.tokenizer
+        if not name:
+            return None
+
+        if name not in _TOKENIZER_CACHE:
+            try:
+                _TOKENIZER_CACHE[name] = (
+                    Tokenizer.from_file(name) if Path(name).is_file() else Tokenizer.from_pretrained(name)
+                )
+            except Exception:
+                _TOKENIZER_CACHE[name] = None
+
+        tokenizer = _TOKENIZER_CACHE[name]
+        return len(tokenizer.encode(text).ids) if tokenizer is not None else None
 
 
 def load_pools(path: str | Path) -> PoolsConfig:

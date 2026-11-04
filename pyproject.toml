@@ -10,6 +10,7 @@ dependencies = [
     "uvicorn>=0.29",
     "jsonschema>=4.20",
     "mcp>=1.0",
+    "tokenizers>=0.20",
 ]
 
 [project.scripts]
