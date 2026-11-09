@@ -56,6 +56,8 @@ type DeploymentClient interface {
 	Infer(ctx context.Context, req InferRequest) <-chan InferEvent
 }
 
+const inferTimeout = 30 * time.Minute
+
 func NewDeploymentClient(d Deployment) (DeploymentClient, error) {
 	if d.APIBase == "" {
 		return nil, fmt.Errorf("deployment %s has no api_base", d.ID)
@@ -64,7 +66,7 @@ func NewDeploymentClient(d Deployment) (DeploymentClient, error) {
 		apiBase: strings.TrimRight(d.APIBase, "/"),
 		apiKey:  d.APIKey,
 		model:   d.Model,
-		http:    &http.Client{Timeout: 5 * time.Minute},
+		http:    &http.Client{Timeout: inferTimeout},
 	}, nil
 }
 

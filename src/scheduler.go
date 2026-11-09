@@ -78,18 +78,30 @@ func (p *PoolState) FitsAny(estimatedTokens int) bool {
 	return false
 }
 
-func SelectDeployment(pool *PoolState, estimatedTokens int, pinnedDeploymentID string, excluded []string, now time.Time) (*DeploymentState, error) {
+func SelectDeployment(pool *PoolState, estimatedTokens int, pinnedDeploymentID string, preferredDeploymentID string, excluded []string, backlog map[string]time.Duration, now time.Time) (chosen *DeploymentState, deferredTo *DeploymentState, err error) {
 	if pinnedDeploymentID != "" {
 		for _, d := range pool.Deployments {
 			if d.Config.ID != pinnedDeploymentID {
 				continue
 			}
 			if d.InCooldown(now) || !d.IsIdle() || !d.FitsContext(estimatedTokens) {
-				return nil, errNoDeploymentAvailable
+				return nil, d, errNoDeploymentAvailable
 			}
-			return d, nil
+			return d, nil, nil
 		}
-		return nil, errUnknownDeployment
+		return nil, nil, errUnknownDeployment
+	}
+
+	if preferredDeploymentID != "" && !slices.Contains(excluded, preferredDeploymentID) {
+		for _, d := range pool.Deployments {
+			if d.Config.ID != preferredDeploymentID {
+				continue
+			}
+			if !d.InCooldown(now) && d.IsIdle() && d.FitsContext(estimatedTokens) {
+				return d, nil, nil
+			}
+			break
+		}
 	}
 
 	var idleBest *DeploymentState
@@ -113,7 +125,7 @@ func SelectDeployment(pool *PoolState, estimatedTokens int, pinnedDeploymentID s
 				idleBestEstimate = estimate
 			}
 		} else {
-			finish := d.ProjectedFinish(now, estimatedTokens)
+			finish := d.ProjectedFinish(now, estimatedTokens) + backlog[d.Config.ID]
 			if busyBest == nil || finish < busyBestFinish {
 				busyBest = d
 				busyBestFinish = finish
@@ -123,18 +135,18 @@ func SelectDeployment(pool *PoolState, estimatedTokens int, pinnedDeploymentID s
 
 	if idleBest == nil && busyBest == nil {
 		if !anyNonExcluded {
-			return nil, errAllDeploymentsExhausted
+			return nil, nil, errAllDeploymentsExhausted
 		}
-		return nil, errNoDeploymentAvailable
+		return nil, nil, errNoDeploymentAvailable
 	}
 	if idleBest == nil {
-		return nil, errNoDeploymentAvailable
+		return nil, busyBest, errNoDeploymentAvailable
 	}
 	if busyBest != nil && idleBestEstimate > 0 {
 		threshold := time.Duration(float64(idleBestEstimate) * (1 - BusyIdleMargin))
 		if busyBestFinish <= threshold {
-			return nil, errNoDeploymentAvailable
+			return nil, busyBest, errNoDeploymentAvailable
 		}
 	}
-	return idleBest, nil
+	return idleBest, nil, nil
 }

@@ -34,10 +34,16 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
+type ToolResultInput struct {
+	ToolCallID string `json:"tool_call_id"`
+	ToolOutput string `json:"tool_output"`
+}
+
 type ResponseInput struct {
-	Text       string `json:"text,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	ToolOutput string `json:"tool_output,omitempty"`
+	Text        string            `json:"text,omitempty"`
+	ToolCallID  string            `json:"tool_call_id,omitempty"`
+	ToolOutput  string            `json:"tool_output,omitempty"`
+	ToolResults []ToolResultInput `json:"tool_results,omitempty"`
 }
 
 type ResponseRequest struct {
@@ -69,29 +75,30 @@ type BatchRequest struct {
 }
 
 type Job struct {
-	ID                  string
-	Pool                string
-	Status              JobStatus
-	PinnedDeploymentID  string
-	DeploymentID        string
-	History             []Message
-	Tools               []Tool
-	ToolChoice          string
-	SkillInstructions   string
-	FinalResponseFormat *CompiledSchema
-	MaxRetries          int
-	MaxToolRounds       int
-	ToolRounds          int
-	Attempts            int
-	FailedDeploymentIDs []string
-	PendingToolCalls    []ToolCall
-	Reasoning           string
-	StreamPreview       string
-	Result              string
-	FailureReason       string
-	IsBatchItem         bool
-	SubmittedAt         time.Time
-	StartedAt           time.Time
+	ID                    string
+	Pool                  string
+	Status                JobStatus
+	PinnedDeploymentID    string
+	PreferredDeploymentID string
+	DeploymentID          string
+	History               []Message
+	Tools                 []Tool
+	ToolChoice            string
+	SkillInstructions     string
+	FinalResponseFormat   *CompiledSchema
+	MaxRetries            int
+	MaxToolRounds         int
+	ToolRounds            int
+	Attempts              int
+	FailedDeploymentIDs   []string
+	PendingToolCalls      []ToolCall
+	Reasoning             string
+	StreamPreview         string
+	Result                string
+	FailureReason         string
+	IsBatchItem           bool
+	SubmittedAt           time.Time
+	StartedAt             time.Time
 
 	cancel context.CancelFunc
 }

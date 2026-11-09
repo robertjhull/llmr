@@ -2,6 +2,7 @@ package tests
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -65,6 +66,106 @@ func TestModelRequestsToolUseInResponseAndContinuesJobAfterReceivingResults(t *t
 	}
 }
 
+func TestModelRequestsMultipleToolCallsAtOnceAndAllAreAnsweredTogether(t *testing.T) {
+	cfg := &llmr.Config{Pools: []llmr.Pool{{Name: "pool1", Deployments: []llmr.Deployment{
+		{ID: "a", Model: "model-a", APIBase: "mock://a", Capacity: 1},
+	}}}}
+	clients := map[string]*mockClient{"a": {respond: func(call int, req llmr.InferRequest) mockResponse {
+		if call == 0 {
+			return mockResponse{toolCalls: []llmr.ToolCall{
+				{ID: "call1", Name: "get_function_context", Arguments: `{"address":"0x1"}`},
+				{ID: "call2", Name: "get_function_context", Arguments: `{"address":"0x2"}`},
+				{ID: "call3", Name: "get_function_context", Arguments: `{"address":"0x3"}`},
+			}}
+		}
+		toolMsgs := 0
+		for _, m := range req.History {
+			if m.Role == "tool" {
+				toolMsgs++
+			}
+		}
+		if toolMsgs != 3 {
+			return mockResponse{err: fmt.Errorf("expected 3 tool-result messages in history, got %d", toolMsgs)}
+		}
+		return mockResponse{text: "done"}
+	}}}
+	o := newOrchestrator(cfg, clients)
+
+	job, err := o.SubmitResponse(llmr.ResponseRequest{
+		Pool:  "pool1",
+		Input: llmr.ResponseInput{Text: "analyze this"},
+		Tools: []llmr.Tool{{Name: "get_function_context"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitResponse: %v", err)
+	}
+	if job.Status != llmr.StatusRequestedTool || len(job.PendingToolCalls) != 3 {
+		t.Fatalf("expected 3 pending tool calls, got status=%s pending=%+v", job.Status, job.PendingToolCalls)
+	}
+
+	job2, err := o.SubmitResponse(llmr.ResponseRequest{
+		Pool:               "pool1",
+		PreviousResponseID: job.ID,
+		Input: llmr.ResponseInput{ToolResults: []llmr.ToolResultInput{
+			{ToolCallID: "call1", ToolOutput: "ctx1"},
+			{ToolCallID: "call2", ToolOutput: "ctx2"},
+			{ToolCallID: "call3", ToolOutput: "ctx3"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitResponse (continuation): %v", err)
+	}
+	if job2.Status != llmr.StatusDone {
+		t.Fatalf("expected job to complete after all tool results, got %s: %s", job2.Status, job2.FailureReason)
+	}
+	if job2.Result != "done" {
+		t.Fatalf("unexpected result: %q", job2.Result)
+	}
+}
+
+func TestResumeRejectsAPartialAnswerToAMultiToolCallRound(t *testing.T) {
+	cfg := &llmr.Config{Pools: []llmr.Pool{{Name: "pool1", Deployments: []llmr.Deployment{
+		{ID: "a", Model: "model-a", APIBase: "mock://a", Capacity: 1},
+	}}}}
+	clients := map[string]*mockClient{"a": {respond: func(call int, req llmr.InferRequest) mockResponse {
+		return mockResponse{toolCalls: []llmr.ToolCall{
+			{ID: "call1", Name: "tool", Arguments: "{}"},
+			{ID: "call2", Name: "tool", Arguments: "{}"},
+		}}
+	}}}
+	o := newOrchestrator(cfg, clients)
+
+	job, err := o.SubmitResponse(llmr.ResponseRequest{
+		Pool: "pool1", Input: llmr.ResponseInput{Text: "hi"}, Tools: []llmr.Tool{{Name: "tool"}},
+	})
+	if err != nil {
+		t.Fatalf("SubmitResponse: %v", err)
+	}
+
+	if _, err := o.SubmitResponse(llmr.ResponseRequest{
+		Pool:               "pool1",
+		PreviousResponseID: job.ID,
+		Input:              llmr.ResponseInput{ToolCallID: "call1", ToolOutput: "only one"},
+	}); err == nil {
+		t.Fatal("expected an error resuming a 2-pending-tool-call round with only 1 answered")
+	}
+
+	if _, err := o.SubmitResponse(llmr.ResponseRequest{
+		Pool:               "pool1",
+		PreviousResponseID: job.ID,
+		Input: llmr.ResponseInput{ToolResults: []llmr.ToolResultInput{
+			{ToolCallID: "call1", ToolOutput: "a"},
+			{ToolCallID: "not-a-real-id", ToolOutput: "b"},
+		}},
+	}); err == nil {
+		t.Fatal("expected an error resuming with an unknown tool_call_id")
+	}
+
+	if job.Status != llmr.StatusRequestedTool || len(job.PendingToolCalls) != 2 {
+		t.Fatalf("rejected resume(s) mutated the job: status=%s pending=%+v", job.Status, job.PendingToolCalls)
+	}
+}
+
 func TestBatchItemPausedOnAToolCallIsContinuedViaItsOwnPerItemID(t *testing.T) {
 	cfg := &llmr.Config{Pools: []llmr.Pool{{Name: "pool1", Deployments: []llmr.Deployment{
 		{ID: "a", Model: "model-a", APIBase: "mock://a", Capacity: 1},
@@ -99,9 +200,6 @@ func TestBatchItemPausedOnAToolCallIsContinuedViaItsOwnPerItemID(t *testing.T) {
 		t.Fatalf("expected item paused for tool call: err=%v job=%+v", err, job)
 	}
 
-	// A batch item's continuation is dispatched in the background (like
-	// the batch itself), not run synchronously here -- poll for it the
-	// same way the first pause was polled for above.
 	if _, err := o.SubmitResponse(llmr.ResponseRequest{
 		Pool:               "pool1",
 		PreviousResponseID: itemID,
@@ -171,9 +269,6 @@ func TestBatchItemContinuationAfterAToolCallIsPlacedFreshRatherThanPinned(t *tes
 	}()
 	time.Sleep(100 * time.Millisecond)
 
-	// Dispatched in the background (see SubmitResponse) -- poll for the
-	// item to pick up a deployment rather than reading it off the return
-	// value, which is no longer meaningful the instant this call returns.
 	if _, err := o.SubmitResponse(llmr.ResponseRequest{
 		Pool:               "pool1",
 		PreviousResponseID: itemID,
@@ -182,11 +277,6 @@ func TestBatchItemContinuationAfterAToolCallIsPlacedFreshRatherThanPinned(t *tes
 		t.Fatalf("SubmitResponse (continuation): %v", err)
 	}
 
-	// job.DeploymentID is never cleared on a continuation -- it still
-	// holds the FIRST round's deployment until the continuation's own
-	// scheduling decision overwrites it -- so poll for the terminal
-	// Status instead of a DeploymentID that's already non-empty from
-	// before this continuation even started.
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if job, _ := o.GetJob(itemID); job != nil && job.Status == llmr.StatusDone {

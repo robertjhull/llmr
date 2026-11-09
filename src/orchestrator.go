@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -120,24 +121,80 @@ func (o *Orchestrator) estimateJobTokens(job *Job) int {
 	return total
 }
 
+func validateToolResults(pending []ToolCall, results []ToolResultInput) error {
+	if len(pending) == 0 {
+		return nil
+	}
+	pendingSet := make(map[string]bool, len(pending))
+	for _, tc := range pending {
+		pendingSet[tc.ID] = true
+	}
+	provided := make(map[string]bool, len(results))
+	for _, r := range results {
+		provided[r.ToolCallID] = true
+	}
+
+	var missing, unknown []string
+	for _, tc := range pending {
+		if !provided[tc.ID] {
+			missing = append(missing, tc.ID)
+		}
+	}
+	for _, r := range results {
+		if !pendingSet[r.ToolCallID] {
+			unknown = append(unknown, r.ToolCallID)
+		}
+	}
+	if len(missing) == 0 && len(unknown) == 0 {
+		return nil
+	}
+
+	var parts []string
+	if len(missing) > 0 {
+		parts = append(parts, fmt.Sprintf("missing result(s) for: %s", strings.Join(missing, ", ")))
+	}
+	if len(unknown) > 0 {
+		parts = append(parts, fmt.Sprintf("unknown tool_call_id(s): %s", strings.Join(unknown, ", ")))
+	}
+	return fmt.Errorf("incomplete tool results for a round with %d pending tool call(s) -- %s",
+		len(pending), strings.Join(parts, "; "))
+}
+
 func (o *Orchestrator) resolveJob(req ResponseRequest) (*Job, bool, error) {
 	if req.PreviousResponseID != "" {
 		job, ok := o.jobs[req.PreviousResponseID]
 		if !ok {
 			return nil, false, fmt.Errorf("unknown response id: %s", req.PreviousResponseID)
 		}
-		if req.Input.ToolCallID != "" {
-			job.History = append(job.History, Message{Role: "tool", ToolCallID: req.Input.ToolCallID, Content: req.Input.ToolOutput})
+
+		results := req.Input.ToolResults
+		if len(results) == 0 && req.Input.ToolCallID != "" {
+			results = []ToolResultInput{{ToolCallID: req.Input.ToolCallID, ToolOutput: req.Input.ToolOutput}}
+		}
+
+		if len(results) > 0 {
+			if err := validateToolResults(job.PendingToolCalls, results); err != nil {
+				return nil, false, err
+			}
+			for _, r := range results {
+				job.History = append(job.History, Message{Role: "tool", ToolCallID: r.ToolCallID, Content: r.ToolOutput})
+			}
 		} else {
 			job.History = append(job.History, Message{Role: "user", Content: req.Input.Text})
 		}
 		job.PendingToolCalls = nil
 		job.FailedDeploymentIDs = nil
 		job.Attempts = 0
-		if !job.IsBatchItem {
-			job.PinnedDeploymentID = job.DeploymentID
+		if req.PinnedDeploymentID != "" {
+			job.PinnedDeploymentID = req.PinnedDeploymentID
+			job.PreferredDeploymentID = ""
 		} else {
 			job.PinnedDeploymentID = ""
+			if !job.IsBatchItem {
+				job.PreferredDeploymentID = job.DeploymentID
+			} else {
+				job.PreferredDeploymentID = ""
+			}
 		}
 		job.Status = StatusQueued
 		return job, false, nil
@@ -487,16 +544,20 @@ func (o *Orchestrator) removeFromQueueLocked(pool *PoolState, target *QueuedRequ
 func (o *Orchestrator) scheduleLocked(pool *PoolState) {
 	now := time.Now()
 	remaining := pool.Queue[:0]
+	backlog := make(map[string]time.Duration)
 	for _, qr := range pool.Queue {
 		if qr.Job.Status == StatusCancelled {
 			continue
 		}
 
-		d, err := SelectDeployment(pool, qr.EstimatedTokens, qr.Job.PinnedDeploymentID, qr.Job.FailedDeploymentIDs, now)
+		d, deferredTo, err := SelectDeployment(pool, qr.EstimatedTokens, qr.Job.PinnedDeploymentID, qr.Job.PreferredDeploymentID, qr.Job.FailedDeploymentIDs, backlog, now)
 		if err != nil {
 			if err == errPromptTooLarge || err == errUnknownDeployment || err == errAllDeploymentsExhausted {
 				qr.err = err
 				continue
+			}
+			if deferredTo != nil {
+				backlog[deferredTo.Config.ID] += deferredTo.estimatedAvgDuration(qr.EstimatedTokens)
 			}
 			remaining = append(remaining, qr)
 			continue
