@@ -17,6 +17,7 @@ const (
 	MaxStoredJobs            = 100
 	MetricSmoothingAlpha     = 0.3
 	maxReasoningPreviewChars = 4000
+	maxStreamPreviewChars    = 20000
 )
 
 // CooldownDuration is a var (not const) so tests can shrink it; production
@@ -425,7 +426,7 @@ func (o *Orchestrator) deploymentStatusLocked(d *DeploymentState, now time.Time)
 
 	var longest time.Duration
 	var jobStatus JobStatus = StatusInferring
-	var reasoningPreview string
+	var streamPreview string
 	for _, slot := range d.ActiveSlots {
 		elapsed := now.Sub(slot.StartedAt)
 		if elapsed > longest {
@@ -433,13 +434,13 @@ func (o *Orchestrator) deploymentStatusLocked(d *DeploymentState, now time.Time)
 		}
 		if job, ok := o.jobs[slot.JobID]; ok {
 			jobStatus = job.Status
-			reasoningPreview = job.Reasoning
+			streamPreview = job.StreamPreview
 		}
 	}
 	minutes := int(longest.Minutes())
 	status.ElapsedMinutes = &minutes
 	status.Status = string(jobStatus)
-	status.ReasoningPreview = reasoningPreview
+	status.StreamPreview = streamPreview
 	return status
 }
 
@@ -573,18 +574,18 @@ func (o *Orchestrator) infer(ctx context.Context, client DeploymentClient, job *
 		FinalResponseFormat: finalResponseFormat,
 	})
 
-	gotChunk := false
 	for ev := range events {
 		switch ev.Kind {
 		case InferEventChunk:
-			if !gotChunk {
-				gotChunk = true
-				o.mu.Lock()
-				if job.Status != StatusCancelled {
-					job.Status = StatusStreaming
-				}
-				o.mu.Unlock()
+			o.mu.Lock()
+			if job.Status != StatusCancelled {
+				job.Status = StatusStreaming
 			}
+			job.StreamPreview += ev.Text
+			if len(job.StreamPreview) > maxStreamPreviewChars {
+				job.StreamPreview = job.StreamPreview[len(job.StreamPreview)-maxStreamPreviewChars:]
+			}
+			o.mu.Unlock()
 		case InferEventReasoningChunk:
 			o.mu.Lock()
 			if job.Status != StatusCancelled {
@@ -593,6 +594,10 @@ func (o *Orchestrator) infer(ctx context.Context, client DeploymentClient, job *
 			job.Reasoning += ev.Text
 			if len(job.Reasoning) > maxReasoningPreviewChars {
 				job.Reasoning = job.Reasoning[len(job.Reasoning)-maxReasoningPreviewChars:]
+			}
+			job.StreamPreview += ev.Text
+			if len(job.StreamPreview) > maxStreamPreviewChars {
+				job.StreamPreview = job.StreamPreview[len(job.StreamPreview)-maxStreamPreviewChars:]
 			}
 			o.mu.Unlock()
 		case InferEventDone:
@@ -643,6 +648,7 @@ func (o *Orchestrator) runJob(pool *PoolState, job *Job) {
 		job.DeploymentID = d.Config.ID
 		job.StartedAt = time.Now()
 		job.Reasoning = ""
+		job.StreamPreview = ""
 		ctx, cancel := context.WithCancel(context.Background())
 		job.cancel = cancel
 		o.mu.Unlock()

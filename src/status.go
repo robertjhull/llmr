@@ -13,7 +13,7 @@ type DeploymentStatus struct {
 	MaxContextTokens *int     `json:"maxContextTokens,omitempty"`
 	Status           string   `json:"status"`
 	ElapsedMinutes   *int     `json:"elapsedMinutes"`
-	ReasoningPreview string   `json:"reasoningPreview,omitempty"`
+	StreamPreview    string   `json:"streamPreview,omitempty"`
 }
 
 type PoolStatus struct {

@@ -2,7 +2,6 @@
   "use strict";
 
   var POLL_INTERVAL_MS = 3000;
-  var REASONING_PREVIEW_CHARS = 160;
 
   var poolsEl = document.getElementById("pools");
   var serverIndicator = document.getElementById("server-indicator");
@@ -30,12 +29,6 @@
     return v === null || v === undefined ? "—" : v.toFixed(1);
   }
 
-  function tailPreview(text, maxChars) {
-    if (!text) return "";
-    if (text.length <= maxChars) return text;
-    return "…" + text.slice(text.length - maxChars);
-  }
-
   function el(tag, className, text) {
     var e = document.createElement(tag);
     if (className) e.className = className;
@@ -55,7 +48,16 @@
 
   function buildModelRow(model) {
     var tr = document.createElement("tr");
+    tr.className = "model-row";
     tr.dataset.id = model.id;
+
+    var tdToggle = document.createElement("td");
+    tdToggle.className = "col-toggle";
+    var toggleBtn = el("button", "stream-toggle");
+    toggleBtn.type = "button";
+    toggleBtn.setAttribute("aria-label", "Toggle stream output");
+    toggleBtn.appendChild(el("span", "chevron"));
+    tdToggle.appendChild(toggleBtn);
 
     var tdIndicator = document.createElement("td");
     tdIndicator.className = "col-indicator";
@@ -70,8 +72,8 @@
     tdStatus.className = "col-status";
     tdStatus.appendChild(el("span", "status-word"));
     tdStatus.appendChild(el("span", "status-elapsed"));
-    tdStatus.appendChild(el("div", "reasoning-preview mono"));
 
+    tr.appendChild(tdToggle);
     tr.appendChild(tdIndicator);
     tr.appendChild(tdId);
     tr.appendChild(tdModel);
@@ -79,7 +81,25 @@
     tr.appendChild(tdTps);
     tr.appendChild(tdStatus);
 
+    var detailTr = document.createElement("tr");
+    detailTr.className = "model-detail-row";
+    var detailTd = document.createElement("td");
+    detailTd.className = "model-detail-cell";
+    detailTd.colSpan = 7;
+    var detailPanel = el("div", "stream-panel mono");
+    detailTd.appendChild(detailPanel);
+    detailTr.appendChild(detailTd);
+
+    toggleBtn.addEventListener("click", function () {
+      var open = tr.classList.toggle("expanded");
+      detailTr.classList.toggle("expanded", open);
+      if (open) {
+        detailPanel.scrollTop = detailPanel.scrollHeight;
+      }
+    });
+
     updateModelRow(tr, model);
+    tr._detailRow = detailTr;
     return tr;
   }
 
@@ -93,11 +113,6 @@
     setText(tr.querySelector(".status-word"), cls ? model.status : "--");
     setText(tr.querySelector(".status-elapsed"), formatElapsed(model.elapsedMinutes));
 
-    var reasoningEl = tr.querySelector(".reasoning-preview");
-    var preview = tailPreview(model.reasoningPreview, REASONING_PREVIEW_CHARS);
-    setText(reasoningEl, preview);
-    setClass(reasoningEl, "visible", !!preview);
-
     var dot = tr.querySelector(".indicator");
     var statusWord = tr.querySelector(".status-word");
     ["healthy", "unhealthy", "active"].forEach(function (name) {
@@ -105,6 +120,20 @@
       setClass(dot, "indicator-" + name, want);
       setClass(statusWord, "status-" + name, want);
     });
+
+    var detailTr = tr._detailRow;
+    if (detailTr) {
+      var panel = detailTr.querySelector(".stream-panel");
+      var text = model.streamPreview || "";
+      if (panel.textContent !== text) {
+        var wasAtBottom = panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 12;
+        panel.textContent = text;
+        if (tr.classList.contains("expanded") && wasAtBottom) {
+          panel.scrollTop = panel.scrollHeight;
+        }
+      }
+      setClass(panel, "empty", !text);
+    }
   }
 
   function buildPool(pool) {
@@ -126,12 +155,13 @@
     var thead = document.createElement("thead");
     var headRow = document.createElement("tr");
     [
+      ["", "col-toggle"],
       ["", "col-indicator"],
-      ["ID", ""],
-      ["Model", ""],
-      ["API Base", ""],
+      ["ID", "col-id"],
+      ["Model", "col-model"],
+      ["API Base", "col-apibase"],
       ["tok/s", "col-tps"],
-      ["Status", ""]
+      ["Status", "col-status"]
     ].forEach(function (pair) {
       var th = document.createElement("th");
       if (pair[1]) th.className = pair[1];
@@ -164,7 +194,7 @@
     var tbody = section.querySelector("tbody");
     var existing = {};
     Array.prototype.forEach.call(tbody.children, function (tr) {
-      existing[tr.dataset.id] = tr;
+      if (tr.classList.contains("model-row")) existing[tr.dataset.id] = tr;
     });
 
     var seen = {};
@@ -174,12 +204,18 @@
       if (tr) {
         updateModelRow(tr, model);
       } else {
-        tbody.appendChild(buildModelRow(model));
+        tr = buildModelRow(model);
+        tbody.appendChild(tr);
+        tbody.appendChild(tr._detailRow);
       }
     });
 
     Object.keys(existing).forEach(function (id) {
-      if (!seen[id]) tbody.removeChild(existing[id]);
+      if (!seen[id]) {
+        var tr = existing[id];
+        if (tr._detailRow) tbody.removeChild(tr._detailRow);
+        tbody.removeChild(tr);
+      }
     });
   }
 
