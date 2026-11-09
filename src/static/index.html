@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llmr — Server Status</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+  <header class="server-header">
+    <div class="server-header-top">
+      <h1 class="page-title">Server Status</h1>
+      <div class="server-indicator" id="server-indicator">
+        <span class="dot dot-online"></span>
+        <span class="indicator-label">ONLINE</span>
+      </div>
+    </div>
+    <div class="server-meta">
+      <div class="meta-field">
+        <div class="meta-label">Host</div>
+        <div class="meta-value mono" id="meta-host">&mdash;</div>
+      </div>
+      <div class="meta-field">
+        <div class="meta-label">Uptime</div>
+        <div class="meta-value mono" id="meta-uptime">&mdash;</div>
+      </div>
+      <div class="meta-field">
+        <div class="meta-label">Requests</div>
+        <div class="meta-value mono" id="meta-requests">&mdash;</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="pools" id="pools"></main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

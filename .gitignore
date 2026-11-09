@@ -1,6 +1,12 @@
-__pycache__/
-*.pyc
-.venv/
-*.egg-info/
-pools.json
+# Build artifacts
+/llm-request-router
+/llmr
+
+# Runtime-generated
+/pools.json
+
+# Docs
+/docs/
+
+# OS cruft
 .DS_Store
