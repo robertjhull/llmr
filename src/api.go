@@ -34,10 +34,13 @@ func (a *API) HandleStatus(w http.ResponseWriter, r *http.Request) {
 
 func jobToResponsesAPI(job *Job) ResponsesAPIResponse {
 	return ResponsesAPIResponse{
-		ID:     job.ID,
-		Status: string(job.Status),
-		Output: job.Result,
-		Error:  job.FailureReason,
+		ID:               job.ID,
+		Status:           string(job.Status),
+		Output:           job.Result,
+		Error:            job.FailureReason,
+		ModelID:          job.DeploymentID,
+		PendingToolCalls: job.PendingToolCalls,
+		Reasoning:        job.Reasoning,
 	}
 }
 
@@ -51,6 +54,11 @@ func (a *API) HandleSubmitResponse(w http.ResponseWriter, r *http.Request) {
 	job, err := a.orchestrator.SubmitResponse(req)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if job.IsBatchItem {
+		writeJSON(w, http.StatusAccepted, map[string]string{"id": job.ID, "status": "queued"})
 		return
 	}
 
@@ -83,28 +91,37 @@ func (a *API) HandleSubmitBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 type ItemView struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Result string `json:"result,omitempty"`
-	Error  string `json:"error,omitempty"`
+	ID               string     `json:"id"`
+	Status           string     `json:"status"`
+	Result           string     `json:"result,omitempty"`
+	Error            string     `json:"error,omitempty"`
+	ModelID          string     `json:"model_id,omitempty"`
+	PendingToolCalls []ToolCall `json:"pending_tool_calls,omitempty"`
+	Reasoning        string     `json:"reasoning,omitempty"`
 }
 
 type JobView struct {
-	ID     string     `json:"id"`
-	Pool   string     `json:"pool"`
-	Status string     `json:"status"`
-	Result string     `json:"result,omitempty"`
-	Error  string     `json:"error,omitempty"`
-	Items  []ItemView `json:"items,omitempty"`
+	ID               string     `json:"id"`
+	Pool             string     `json:"pool"`
+	Status           string     `json:"status"`
+	Result           string     `json:"result,omitempty"`
+	Error            string     `json:"error,omitempty"`
+	ModelID          string     `json:"model_id,omitempty"`
+	PendingToolCalls []ToolCall `json:"pending_tool_calls,omitempty"`
+	Reasoning        string     `json:"reasoning,omitempty"`
+	Items            []ItemView `json:"items,omitempty"`
 }
 
 func jobView(job *Job) JobView {
 	return JobView{
-		ID:     job.ID,
-		Pool:   job.Pool,
-		Status: string(job.Status),
-		Result: job.Result,
-		Error:  job.FailureReason,
+		ID:               job.ID,
+		Pool:             job.Pool,
+		Status:           string(job.Status),
+		Result:           job.Result,
+		Error:            job.FailureReason,
+		ModelID:          job.DeploymentID,
+		PendingToolCalls: job.PendingToolCalls,
+		Reasoning:        job.Reasoning,
 	}
 }
 
@@ -116,10 +133,13 @@ func batchView(batch *Batch) JobView {
 	}
 	for _, item := range batch.Items {
 		view.Items = append(view.Items, ItemView{
-			ID:     item.ID,
-			Status: string(item.Job.Status),
-			Result: item.Job.Result,
-			Error:  item.Job.FailureReason,
+			ID:               item.ID,
+			Status:           string(item.Job.Status),
+			Result:           item.Job.Result,
+			Error:            item.Job.FailureReason,
+			ModelID:          item.Job.DeploymentID,
+			PendingToolCalls: item.Job.PendingToolCalls,
+			Reasoning:        item.Job.Reasoning,
 		})
 	}
 	return view

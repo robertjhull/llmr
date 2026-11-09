@@ -85,6 +85,7 @@ type Job struct {
 	Attempts            int
 	FailedDeploymentIDs []string
 	PendingToolCalls    []ToolCall
+	Reasoning           string
 	Result              string
 	FailureReason       string
 	IsBatchItem         bool

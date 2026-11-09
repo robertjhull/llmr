@@ -1,7 +1,8 @@
 (function () {
   "use strict";
 
-  var POLL_INTERVAL_MS = 7000;
+  var POLL_INTERVAL_MS = 3000;
+  var REASONING_PREVIEW_CHARS = 160;
 
   var poolsEl = document.getElementById("pools");
   var serverIndicator = document.getElementById("server-indicator");
@@ -27,6 +28,12 @@
 
   function formatTps(v) {
     return v === null || v === undefined ? "—" : v.toFixed(1);
+  }
+
+  function tailPreview(text, maxChars) {
+    if (!text) return "";
+    if (text.length <= maxChars) return text;
+    return "…" + text.slice(text.length - maxChars);
   }
 
   function el(tag, className, text) {
@@ -63,6 +70,7 @@
     tdStatus.className = "col-status";
     tdStatus.appendChild(el("span", "status-word"));
     tdStatus.appendChild(el("span", "status-elapsed"));
+    tdStatus.appendChild(el("div", "reasoning-preview mono"));
 
     tr.appendChild(tdIndicator);
     tr.appendChild(tdId);
@@ -84,6 +92,11 @@
     setText(tr.querySelector(".col-tps"), formatTps(model.tokensPerSecond));
     setText(tr.querySelector(".status-word"), cls ? model.status : "--");
     setText(tr.querySelector(".status-elapsed"), formatElapsed(model.elapsedMinutes));
+
+    var reasoningEl = tr.querySelector(".reasoning-preview");
+    var preview = tailPreview(model.reasoningPreview, REASONING_PREVIEW_CHARS);
+    setText(reasoningEl, preview);
+    setClass(reasoningEl, "visible", !!preview);
 
     var dot = tr.querySelector(".indicator");
     var statusWord = tr.querySelector(".status-word");

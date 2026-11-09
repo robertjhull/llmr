@@ -130,7 +130,7 @@ func SelectDeployment(pool *PoolState, estimatedTokens int, pinnedDeploymentID s
 	if idleBest == nil {
 		return nil, errNoDeploymentAvailable
 	}
-	if busyBest != nil {
+	if busyBest != nil && idleBestEstimate > 0 {
 		threshold := time.Duration(float64(idleBestEstimate) * (1 - BusyIdleMargin))
 		if busyBestFinish <= threshold {
 			return nil, errNoDeploymentAvailable

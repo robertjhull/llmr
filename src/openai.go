@@ -12,18 +12,22 @@ import (
 )
 
 type ResponsesAPIResponse struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+	ID               string     `json:"id"`
+	Status           string     `json:"status"`
+	Output           string     `json:"output,omitempty"`
+	Error            string     `json:"error,omitempty"`
+	ModelID          string     `json:"model_id,omitempty"`
+	PendingToolCalls []ToolCall `json:"pending_tool_calls,omitempty"`
+	Reasoning        string     `json:"reasoning,omitempty"`
 }
 
 type InferRequest struct {
-	Model        string
-	History      []Message
-	Tools        []Tool
-	ToolChoice   string
-	Instructions string
+	Model               string
+	History             []Message
+	Tools               []Tool
+	ToolChoice          string
+	Instructions        string
+	FinalResponseFormat json.RawMessage
 }
 
 type InferOutcome struct {
@@ -36,6 +40,7 @@ type InferEventKind int
 
 const (
 	InferEventChunk InferEventKind = iota
+	InferEventReasoningChunk
 	InferEventDone
 	InferEventError
 )
@@ -102,8 +107,9 @@ type chatFunction struct {
 type chatCompletionChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Function struct {
@@ -153,12 +159,23 @@ func (c *openaiClient) Infer(ctx context.Context, req InferRequest) <-chan Infer
 			})
 		}
 
-		body, err := json.Marshal(map[string]any{
+		payload := map[string]any{
 			"model":    req.Model,
 			"messages": messages,
 			"tools":    tools,
 			"stream":   true,
-		})
+		}
+		if len(req.FinalResponseFormat) > 0 {
+			payload["response_format"] = map[string]any{
+				"type": "json_schema",
+				"json_schema": map[string]any{
+					"name":   "response",
+					"strict": true,
+					"schema": req.FinalResponseFormat,
+				},
+			}
+		}
+		body, err := json.Marshal(payload)
 		if err != nil {
 			events <- InferEvent{Kind: InferEventError, Err: err}
 			return
@@ -187,6 +204,7 @@ func (c *openaiClient) Infer(ctx context.Context, req InferRequest) <-chan Infer
 		}
 
 		var textBuilder strings.Builder
+		var reasoningBuilder strings.Builder
 		toolCalls := map[int]*ToolCall{}
 		var toolOrder []int
 
@@ -213,6 +231,10 @@ func (c *openaiClient) Infer(ctx context.Context, req InferRequest) <-chan Infer
 			if delta.Content != "" {
 				textBuilder.WriteString(delta.Content)
 				events <- InferEvent{Kind: InferEventChunk, Text: delta.Content}
+			}
+			if delta.ReasoningContent != "" {
+				reasoningBuilder.WriteString(delta.ReasoningContent)
+				events <- InferEvent{Kind: InferEventReasoningChunk, Text: delta.ReasoningContent}
 			}
 			for _, tc := range delta.ToolCalls {
 				existing, ok := toolCalls[tc.Index]
@@ -246,7 +268,7 @@ func (c *openaiClient) Infer(ctx context.Context, req InferRequest) <-chan Infer
 			Outcome: InferOutcome{
 				Text:      text,
 				ToolCalls: calls,
-				TokensOut: EstimateTokens(text),
+				TokensOut: EstimateTokens(text) + EstimateTokens(reasoningBuilder.String()),
 			},
 		}
 	}()

@@ -99,16 +99,27 @@ func TestBatchItemPausedOnAToolCallIsContinuedViaItsOwnPerItemID(t *testing.T) {
 		t.Fatalf("expected item paused for tool call: err=%v job=%+v", err, job)
 	}
 
-	job2, err := o.SubmitResponse(llmr.ResponseRequest{
+	// A batch item's continuation is dispatched in the background (like
+	// the batch itself), not run synchronously here -- poll for it the
+	// same way the first pause was polled for above.
+	if _, err := o.SubmitResponse(llmr.ResponseRequest{
 		Pool:               "pool1",
 		PreviousResponseID: itemID,
 		Input:              llmr.ResponseInput{ToolCallID: "call1", ToolOutput: "42"},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("SubmitResponse (continuation via item id): %v", err)
 	}
-	if job2.Status != llmr.StatusDone {
-		t.Fatalf("expected item to complete, got %s", job2.Status)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if job, _ := o.GetJob(itemID); job != nil && job.Status == llmr.StatusDone {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	job, err = o.GetJob(itemID)
+	if err != nil || job.Status != llmr.StatusDone {
+		t.Fatalf("expected item to complete, got %s", job.Status)
 	}
 
 	gotBatch, err := o.GetBatch(batch.ID)
@@ -160,16 +171,32 @@ func TestBatchItemContinuationAfterAToolCallIsPlacedFreshRatherThanPinned(t *tes
 	}()
 	time.Sleep(100 * time.Millisecond)
 
-	job2, err := o.SubmitResponse(llmr.ResponseRequest{
+	// Dispatched in the background (see SubmitResponse) -- poll for the
+	// item to pick up a deployment rather than reading it off the return
+	// value, which is no longer meaningful the instant this call returns.
+	if _, err := o.SubmitResponse(llmr.ResponseRequest{
 		Pool:               "pool1",
 		PreviousResponseID: itemID,
 		Input:              llmr.ResponseInput{ToolCallID: "call1", ToolOutput: "42"},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("SubmitResponse (continuation): %v", err)
 	}
-	if job2.DeploymentID != "b" {
-		t.Fatalf("expected the batch item's continuation to be placed fresh onto idle b rather than waiting on busy a, got %s", job2.DeploymentID)
+
+	// job.DeploymentID is never cleared on a continuation -- it still
+	// holds the FIRST round's deployment until the continuation's own
+	// scheduling decision overwrites it -- so poll for the terminal
+	// Status instead of a DeploymentID that's already non-empty from
+	// before this continuation even started.
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if job, _ := o.GetJob(itemID); job != nil && job.Status == llmr.StatusDone {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	job2, err := o.GetJob(itemID)
+	if err != nil || job2.Status != llmr.StatusDone || job2.DeploymentID != "b" {
+		t.Fatalf("expected the batch item's continuation to be placed fresh onto idle b rather than waiting on busy a, got %+v", job2)
 	}
 
 	close(release)

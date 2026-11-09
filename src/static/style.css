@@ -274,6 +274,24 @@ td.col-tps {
   font-size: 11px;
 }
 
+.reasoning-preview {
+  display: none;
+  margin-top: 3px;
+  max-width: 320px;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  unicode-bidi: plaintext;
+}
+
+.reasoning-preview.visible {
+  display: block;
+}
+
 /* Indicator dot + status colors */
 
 .indicator {

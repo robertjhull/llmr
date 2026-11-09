@@ -6,12 +6,14 @@ import (
 )
 
 type DeploymentStatus struct {
-	ID              string   `json:"id"`
-	Model           string   `json:"model"`
-	APIBase         string   `json:"apiBase"`
-	TokensPerSecond *float64 `json:"tokensPerSecond"`
-	Status          string   `json:"status"`
-	ElapsedMinutes  *int     `json:"elapsedMinutes"`
+	ID               string   `json:"id"`
+	Model            string   `json:"model"`
+	APIBase          string   `json:"apiBase"`
+	TokensPerSecond  *float64 `json:"tokensPerSecond"`
+	MaxContextTokens *int     `json:"maxContextTokens,omitempty"`
+	Status           string   `json:"status"`
+	ElapsedMinutes   *int     `json:"elapsedMinutes"`
+	ReasoningPreview string   `json:"reasoningPreview,omitempty"`
 }
 
 type PoolStatus struct {

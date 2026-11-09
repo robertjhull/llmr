@@ -103,15 +103,26 @@ func TestPoolsShowAllStatuses(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 
-	job2, err := o.SubmitResponse(llmr.ResponseRequest{
+	// Dispatched in the background (see SubmitResponse) -- poll for
+	// completion instead of asserting on the return value, which is no
+	// longer meaningful the instant this call returns.
+	if _, err := o.SubmitResponse(llmr.ResponseRequest{
 		Pool:               "pool1",
 		PreviousResponseID: jobID,
 		Input:              llmr.ResponseInput{ToolCallID: "call1", ToolOutput: "42"},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("SubmitResponse (continuation): %v", err)
 	}
-	if job2.Status != llmr.StatusDone {
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if job, _ := o.GetJob(jobID); job != nil && job.Status == llmr.StatusDone {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	job2, err := o.GetJob(jobID)
+	if err != nil || job2.Status != llmr.StatusDone {
 		t.Fatalf("expected job to finish done, got %s: %s", job2.Status, job2.FailureReason)
 	}
 

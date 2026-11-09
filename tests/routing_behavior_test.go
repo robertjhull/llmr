@@ -592,3 +592,50 @@ func TestBusyDeploymentIsPreferredOnlyWhenItClearsTheMarginThreshold(t *testing.
 		}
 	})
 }
+
+func TestIdleDeploymentWithUnknownSpeedIsUsedRatherThanWaitingOnABusyUnknownDeployment(t *testing.T) {
+	// Two brand-new deployments, neither with a learned tokens_per_second
+	// (both 0, as when freshly added via `llmr add` and never yet used).
+	// Deployment a is held busy; b sits idle. Since neither side of the
+	// busy-vs-idle margin comparison has real data, b must still be used
+	// rather than the comparison degenerating into a 0<=0 tie that always
+	// favors waiting on the busy deployment.
+	cfg := twoModelConfig("pool1", 0, 0)
+	release := make(chan struct{})
+	clients := map[string]*mockClient{
+		"a": {respond: func(call int, req llmr.InferRequest) mockResponse {
+			<-release
+			return mockResponse{text: "ok"}
+		}},
+		"b": {responses: []mockResponse{{text: "ok"}}},
+	}
+	o := newOrchestrator(cfg, clients)
+
+	firstDone := make(chan *llmr.Job, 1)
+	go func() {
+		job, _ := o.SubmitResponse(llmr.ResponseRequest{Pool: "pool1", Input: llmr.ResponseInput{Text: "hi"}})
+		firstDone <- job
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	secondDone := make(chan *llmr.Job, 1)
+	go func() {
+		job, err := o.SubmitResponse(llmr.ResponseRequest{Pool: "pool1", Input: llmr.ResponseInput{Text: "hi"}})
+		if err != nil {
+			t.Errorf("SubmitResponse: %v", err)
+		}
+		secondDone <- job
+	}()
+
+	select {
+	case second := <-secondDone:
+		if second.DeploymentID != "b" {
+			t.Fatalf("expected the second job to use idle b rather than wait on busy a, got %s", second.DeploymentID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second job never completed: it appears stuck waiting on the busy deployment instead of using the idle one")
+	}
+
+	close(release)
+	<-firstDone
+}

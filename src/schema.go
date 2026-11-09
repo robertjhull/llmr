@@ -9,6 +9,7 @@ import (
 
 type CompiledSchema struct {
 	schema *jsonschema.Schema
+	raw    json.RawMessage
 }
 
 func CompileSchema(schema json.RawMessage) (*CompiledSchema, error) {
@@ -16,7 +17,7 @@ func CompileSchema(schema json.RawMessage) (*CompiledSchema, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid final_response_format: %w", err)
 	}
-	return &CompiledSchema{schema: sch}, nil
+	return &CompiledSchema{schema: sch, raw: schema}, nil
 }
 
 func (s *CompiledSchema) ValidateText(text string) error {
@@ -25,4 +26,8 @@ func (s *CompiledSchema) ValidateText(text string) error {
 		return fmt.Errorf("response is not valid JSON: %w", err)
 	}
 	return s.schema.Validate(parsed)
+}
+
+func (s *CompiledSchema) Raw() json.RawMessage {
+	return s.raw
 }

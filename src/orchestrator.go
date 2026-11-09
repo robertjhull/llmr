@@ -2,6 +2,7 @@ package llmr
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ const (
 	DefaultMaxToolRounds     = 5
 	MaxStoredJobs            = 100
 	MetricSmoothingAlpha     = 0.3
+	maxReasoningPreviewChars = 4000
 )
 
 // CooldownDuration is a var (not const) so tests can shrink it; production
@@ -196,6 +198,11 @@ func (o *Orchestrator) SubmitResponse(req ResponseRequest) (*Job, error) {
 		o.registerJobLocked(job)
 	}
 	o.mu.Unlock()
+
+	if job.IsBatchItem {
+		go o.runJob(pool, job)
+		return job, nil
+	}
 
 	o.runJob(pool, job)
 	return job, nil
@@ -392,11 +399,18 @@ func (o *Orchestrator) deploymentStatusLocked(d *DeploymentState, now time.Time)
 		tps = &v
 	}
 
+	var maxContextTokens *int
+	if d.Config.MaxContextTokens > 0 {
+		v := d.Config.MaxContextTokens
+		maxContextTokens = &v
+	}
+
 	status := DeploymentStatus{
-		ID:              d.Config.ID,
-		Model:           d.Config.Model,
-		APIBase:         d.Config.APIBase,
-		TokensPerSecond: tps,
+		ID:               d.Config.ID,
+		Model:            d.Config.Model,
+		APIBase:          d.Config.APIBase,
+		TokensPerSecond:  tps,
+		MaxContextTokens: maxContextTokens,
 	}
 
 	if d.InCooldown(now) {
@@ -411,6 +425,7 @@ func (o *Orchestrator) deploymentStatusLocked(d *DeploymentState, now time.Time)
 
 	var longest time.Duration
 	var jobStatus JobStatus = StatusInferring
+	var reasoningPreview string
 	for _, slot := range d.ActiveSlots {
 		elapsed := now.Sub(slot.StartedAt)
 		if elapsed > longest {
@@ -418,11 +433,13 @@ func (o *Orchestrator) deploymentStatusLocked(d *DeploymentState, now time.Time)
 		}
 		if job, ok := o.jobs[slot.JobID]; ok {
 			jobStatus = job.Status
+			reasoningPreview = job.Reasoning
 		}
 	}
 	minutes := int(longest.Minutes())
 	status.ElapsedMinutes = &minutes
 	status.Status = string(jobStatus)
+	status.ReasoningPreview = reasoningPreview
 	return status
 }
 
@@ -468,11 +485,9 @@ func (o *Orchestrator) removeFromQueueLocked(pool *PoolState, target *QueuedRequ
 
 func (o *Orchestrator) scheduleLocked(pool *PoolState) {
 	now := time.Now()
-	for len(pool.Queue) > 0 {
-		qr := pool.Queue[0]
-
+	remaining := pool.Queue[:0]
+	for _, qr := range pool.Queue {
 		if qr.Job.Status == StatusCancelled {
-			pool.Queue = pool.Queue[1:]
 			continue
 		}
 
@@ -480,10 +495,10 @@ func (o *Orchestrator) scheduleLocked(pool *PoolState) {
 		if err != nil {
 			if err == errPromptTooLarge || err == errUnknownDeployment || err == errAllDeploymentsExhausted {
 				qr.err = err
-				pool.Queue = pool.Queue[1:]
 				continue
 			}
-			return
+			remaining = append(remaining, qr)
+			continue
 		}
 
 		d.ActiveSlots = append(d.ActiveSlots, ActiveSlot{
@@ -492,8 +507,8 @@ func (o *Orchestrator) scheduleLocked(pool *PoolState) {
 			ExpectedDuration: d.estimatedAvgDuration(qr.EstimatedTokens),
 		})
 		qr.deployment = d
-		pool.Queue = pool.Queue[1:]
 	}
+	pool.Queue = remaining
 }
 
 func (o *Orchestrator) releaseSlotLocked(d *DeploymentState, jobID string) {
@@ -545,12 +560,17 @@ func (o *Orchestrator) persistDeploymentMetricLocked(d *DeploymentState) {
 }
 
 func (o *Orchestrator) infer(ctx context.Context, client DeploymentClient, job *Job, d *DeploymentState) (InferOutcome, error) {
+	var finalResponseFormat json.RawMessage
+	if job.FinalResponseFormat != nil {
+		finalResponseFormat = job.FinalResponseFormat.Raw()
+	}
 	events := client.Infer(ctx, InferRequest{
-		Model:        d.Config.Model,
-		History:      job.History,
-		Tools:        job.Tools,
-		ToolChoice:   job.ToolChoice,
-		Instructions: job.SkillInstructions,
+		Model:               d.Config.Model,
+		History:             job.History,
+		Tools:               job.Tools,
+		ToolChoice:          job.ToolChoice,
+		Instructions:        job.SkillInstructions,
+		FinalResponseFormat: finalResponseFormat,
 	})
 
 	gotChunk := false
@@ -565,6 +585,16 @@ func (o *Orchestrator) infer(ctx context.Context, client DeploymentClient, job *
 				}
 				o.mu.Unlock()
 			}
+		case InferEventReasoningChunk:
+			o.mu.Lock()
+			if job.Status != StatusCancelled {
+				job.Status = StatusStreaming
+			}
+			job.Reasoning += ev.Text
+			if len(job.Reasoning) > maxReasoningPreviewChars {
+				job.Reasoning = job.Reasoning[len(job.Reasoning)-maxReasoningPreviewChars:]
+			}
+			o.mu.Unlock()
 		case InferEventDone:
 			return ev.Outcome, nil
 		case InferEventError:
@@ -612,6 +642,7 @@ func (o *Orchestrator) runJob(pool *PoolState, job *Job) {
 		job.Status = StatusInferring
 		job.DeploymentID = d.Config.ID
 		job.StartedAt = time.Now()
+		job.Reasoning = ""
 		ctx, cancel := context.WithCancel(context.Background())
 		job.cancel = cancel
 		o.mu.Unlock()
