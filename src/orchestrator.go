@@ -21,8 +21,6 @@ const (
 	maxStreamPreviewChars    = 20000
 )
 
-// CooldownDuration is a var (not const) so tests can shrink it; production
-// code never changes it from the spec's hardcoded 30s default.
 var CooldownDuration = 30 * time.Second
 
 type ActiveSlot struct {
