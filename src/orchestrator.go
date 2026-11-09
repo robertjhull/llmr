@@ -32,11 +32,12 @@ type ActiveSlot struct {
 }
 
 type DeploymentState struct {
-	Config        Deployment
-	AvgDuration   time.Duration
-	FailureCount  int
-	CooldownUntil time.Time
-	ActiveSlots   []ActiveSlot
+	Config            Deployment
+	AvgDuration       time.Duration
+	FailureCount      int
+	CooldownUntil     time.Time
+	LastFailureReason string
+	ActiveSlots       []ActiveSlot
 }
 
 type QueuedRequest struct {
@@ -473,6 +474,11 @@ func (o *Orchestrator) deploymentStatusLocked(d *DeploymentState, now time.Time)
 
 	if d.InCooldown(now) {
 		status.Status = string(StatusCooldown)
+		remaining := d.CooldownUntil.Sub(now).Round(time.Second)
+		status.StreamPreview = fmt.Sprintf(
+			"in cooldown for %s (%d consecutive failures, threshold %d)\nlast error: %s",
+			remaining, d.FailureCount, CooldownFailureThreshold, d.LastFailureReason,
+		)
 		return status
 	}
 
@@ -583,8 +589,9 @@ func (o *Orchestrator) releaseSlotLocked(d *DeploymentState, jobID string) {
 	d.ActiveSlots = filtered
 }
 
-func (o *Orchestrator) recordFailureLocked(d *DeploymentState) {
+func (o *Orchestrator) recordFailureLocked(d *DeploymentState, err error) {
 	d.FailureCount++
+	d.LastFailureReason = err.Error()
 	if d.FailureCount >= CooldownFailureThreshold {
 		d.CooldownUntil = time.Now().Add(CooldownDuration)
 	}
@@ -739,7 +746,7 @@ func (o *Orchestrator) runJob(pool *PoolState, job *Job) {
 		}
 
 		if inferErr != nil {
-			o.recordFailureLocked(d)
+			o.recordFailureLocked(d, inferErr)
 			job.Attempts++
 			if isTransientError(inferErr) {
 				job.PreferredDeploymentID = d.Config.ID

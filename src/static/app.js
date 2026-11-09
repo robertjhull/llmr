@@ -9,7 +9,7 @@
   var metaUptime = document.getElementById("meta-uptime");
   var metaRequests = document.getElementById("meta-requests");
 
-  var ACTIVE_STATUSES = ["inferring", "streaming", "requested tool", "retrying"];
+  var ACTIVE_STATUSES = ["inferring", "thinking", "streaming", "requested tool", "retrying"];
 
   function statusClass(status) {
     if (status === "idle") return "healthy";
