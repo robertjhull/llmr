@@ -195,13 +195,17 @@ func (c *openaiClient) Infer(ctx context.Context, req InferRequest) <-chan Infer
 
 		resp, err := c.http.Do(httpReq)
 		if err != nil {
-			events <- InferEvent{Kind: InferEventError, Err: err}
+			events <- InferEvent{Kind: InferEventError, Err: MarkTransient(err)}
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 300 {
-			events <- InferEvent{Kind: InferEventError, Err: fmt.Errorf("deployment returned status %s", resp.Status)}
+			err := fmt.Errorf("deployment returned status %s", resp.Status)
+			if isTransientStatus(resp.StatusCode) {
+				err = MarkTransient(err)
+			}
+			events <- InferEvent{Kind: InferEventError, Err: err}
 			return
 		}
 
@@ -255,7 +259,7 @@ func (c *openaiClient) Infer(ctx context.Context, req InferRequest) <-chan Infer
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			events <- InferEvent{Kind: InferEventError, Err: err}
+			events <- InferEvent{Kind: InferEventError, Err: MarkTransient(err)}
 			return
 		}
 

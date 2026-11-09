@@ -183,6 +183,38 @@ func TestOneRequestFailsOnModelRetriesOnOtherModels(t *testing.T) {
 	}
 }
 
+func TestTransientFailureRetriesSameModelInsteadOfSwitching(t *testing.T) {
+	cfg := twoModelConfig("pool1", 100, 100)
+	clients := map[string]*mockClient{
+		"a": {respond: func(call int, req llmr.InferRequest) mockResponse {
+			if call == 0 {
+				return mockResponse{err: llmr.MarkTransient(errors.New("rate limited"))}
+			}
+			return mockResponse{text: "ok"}
+		}},
+		"b": {tokensPerSec: 100},
+	}
+	o := newOrchestrator(cfg, clients)
+
+	maxRetries := 1
+	job, err := o.SubmitResponse(llmr.ResponseRequest{Pool: "pool1", Input: llmr.ResponseInput{Text: "hi"}, MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("SubmitResponse: %v", err)
+	}
+	if job.Status != llmr.StatusDone {
+		t.Fatalf("expected job to succeed after transient retry, got %s: %s", job.Status, job.FailureReason)
+	}
+	if job.DeploymentID != "a" {
+		t.Fatalf("expected the retry to land back on model a, got %s", job.DeploymentID)
+	}
+	if clients["a"].Calls() != 2 {
+		t.Fatalf("expected model a to be called twice (initial attempt + same-model retry), got %d", clients["a"].Calls())
+	}
+	if clients["b"].Calls() != 0 {
+		t.Fatalf("expected model b never to be used for a transient failure on a, got %d calls", clients["b"].Calls())
+	}
+}
+
 func TestModelInCooldownBecomesEligibleAgainAfterItsCooldownWindowElapses(t *testing.T) {
 	cfg := &llmr.Config{Pools: []llmr.Pool{{Name: "pool1", Deployments: []llmr.Deployment{
 		{ID: "a", Model: "model-a", APIBase: "mock://a", Capacity: 1},
