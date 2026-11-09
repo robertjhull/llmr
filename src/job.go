@@ -12,6 +12,7 @@ const (
 	StatusQueued        JobStatus = "queued"
 	StatusInferring     JobStatus = "inferring"
 	StatusRetrying      JobStatus = "retrying"
+	StatusThinking      JobStatus = "thinking"
 	StatusStreaming     JobStatus = "streaming"
 	StatusRequestedTool JobStatus = "requested tool"
 	StatusIdle          JobStatus = "idle"

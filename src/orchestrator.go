@@ -650,7 +650,7 @@ func (o *Orchestrator) infer(ctx context.Context, client DeploymentClient, job *
 		case InferEventReasoningChunk:
 			o.mu.Lock()
 			if job.Status != StatusCancelled {
-				job.Status = StatusStreaming
+				job.Status = StatusThinking
 			}
 			job.Reasoning += ev.Text
 			if len(job.Reasoning) > maxReasoningPreviewChars {
@@ -741,7 +741,14 @@ func (o *Orchestrator) runJob(pool *PoolState, job *Job) {
 		if inferErr != nil {
 			o.recordFailureLocked(d)
 			job.Attempts++
-			job.FailedDeploymentIDs = append(job.FailedDeploymentIDs, d.Config.ID)
+			if isTransientError(inferErr) {
+				job.PreferredDeploymentID = d.Config.ID
+			} else {
+				job.FailedDeploymentIDs = append(job.FailedDeploymentIDs, d.Config.ID)
+				if job.PreferredDeploymentID == d.Config.ID {
+					job.PreferredDeploymentID = ""
+				}
+			}
 			if job.Attempts > job.MaxRetries {
 				job.Status = StatusFailed
 				job.FailureReason = fmt.Sprintf("exhausted retries: %v", inferErr)
